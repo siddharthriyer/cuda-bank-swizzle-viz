@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Interactive visualizer for CUDA shared-memory bank conflicts and the XOR swizzle used by Hopper WGMMA and TMA.">
+<title>Bank Conflict Lab</title>
+<style>
+  :root {
+    --bg: #e9edf1;
+    --surface: #ffffff;
+    --surface-2: #f2f6fa;
+    --ink: #10171f;
+    --ink-soft: #55636f;
+    --ink-faint: #8a97a3;
+    --line: #d2dae2;
+    --line-strong: #b3bec9;
+    --accent: #0a97ab;      /* teal — col */
+    --accent-2: #d9820b;    /* amber — row (the XOR term) */
+    --good: #1f9d63;        /* green — resulting bank / conflict-free */
+    --bad: #d64545;
+    --shadow: 0 1px 2px rgba(16,23,31,.06), 0 8px 24px rgba(16,23,31,.06);
+    --chip-text: #ffffff;
+  }
+  :root:not([data-theme="light"]) { color-scheme: dark; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b1015; --surface: #131b23; --surface-2: #0e151c;
+      --ink: #e7eef4; --ink-soft: #93a2af; --ink-faint: #5f6f7c;
+      --line: #223039; --line-strong: #33454f;
+      --accent: #26c6d9; --accent-2: #f2ac54; --good: #37c07d; --bad: #f0716f;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.35);
+      --chip-text: #06181d;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0b1015; --surface: #131b23; --surface-2: #0e151c;
+    --ink: #e7eef4; --ink-soft: #93a2af; --ink-faint: #5f6f7c;
+    --line: #223039; --line-strong: #33454f;
+    --accent: #26c6d9; --accent-2: #f2ac54; --good: #37c07d; --bad: #f0716f;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.35);
+    --chip-text: #06181d;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-variant-numeric:tabular-nums; }
+
+  .wrap { max-width:960px; margin:0 auto; padding:clamp(24px,5vw,64px) clamp(18px,5vw,40px) 96px; }
+
+  .eyebrow { font-family:ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--accent); margin:0 0 14px; }
+  h1 { font-size:clamp(30px,5.5vw,50px); line-height:1.05; letter-spacing:-0.02em; margin:0 0 18px; text-wrap:balance; font-weight:680; }
+  .lede { font-size:clamp(16px,2.3vw,19px); color:var(--ink-soft); max-width:62ch; margin:0; }
+  .lede b { color:var(--ink); font-weight:600; }
+
+  section { margin-top:52px; }
+  h2 { font-size:13px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-faint); margin:0 0 18px; padding-bottom:10px; border-bottom:1px solid var(--line); font-weight:600; }
+  p { max-width:66ch; }
+  p .k { color:var(--accent); font-weight:600; } p .k2 { color:var(--accent-2); font-weight:600; }
+
+  .panel { background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); padding:clamp(18px,3vw,28px); margin-top:30px; }
+
+  .controls { display:flex; flex-wrap:wrap; align-items:center; gap:16px 22px; margin-bottom:22px; }
+  .seg { display:inline-flex; background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:3px; }
+  .seg button { font:inherit; font-size:14px; font-weight:550; border:0; background:transparent; color:var(--ink-soft); padding:7px 14px; border-radius:7px; cursor:pointer; transition:background .15s,color .15s; }
+  .seg button[aria-pressed="true"] { background:var(--accent); color:var(--chip-text); }
+  .seg.warn button[aria-pressed="true"] { background:var(--accent-2); color:var(--chip-text); }
+  .seg button:focus-visible { outline:2px solid var(--accent-2); outline-offset:2px; }
+  .ctl-label { font-size:12px; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.1em; }
+  .slider { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--ink-soft); }
+  .slider input[type=range] { accent-color:var(--accent); width:150px; }
+  .slider .val { font-family:ui-monospace,Menlo,monospace; color:var(--ink); min-width:2ch; }
+
+  .stage { display:grid; grid-template-columns:minmax(0,1fr); gap:28px; align-items:start; }
+  @media (min-width:760px){ .stage { grid-template-columns:auto 1fr; gap:34px; } }
+
+  .fig-label { font-family:ui-monospace,Menlo,monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); margin:0 0 10px; }
+  .canvas-box { width:min(100%,440px); }
+  canvas { width:100%; aspect-ratio:1; display:block; border-radius:8px; border:1px solid var(--line); cursor:crosshair; touch-action:none; }
+  .axis { display:flex; justify-content:space-between; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--ink-faint); margin-top:7px; }
+  .colnote { font-size:12px; color:var(--ink-faint); margin-top:6px; }
+
+  .right { display:flex; flex-direction:column; gap:16px; }
+
+  .verdict-card { border-radius:12px; padding:15px 17px; border:1px solid var(--line); }
+  .verdict-card.good { background:color-mix(in srgb,var(--good) 13%,var(--surface)); border-color:color-mix(in srgb,var(--good) 40%,var(--line)); }
+  .verdict-card.bad  { background:color-mix(in srgb,var(--bad) 13%,var(--surface));  border-color:color-mix(in srgb,var(--bad) 40%,var(--line)); }
+  .verdict-head { display:flex; align-items:center; gap:10px; }
+  .dot { width:11px; height:11px; border-radius:50%; flex:none; }
+  .dot.good{background:var(--good);} .dot.bad{background:var(--bad);}
+  .verdict-head .t { font-size:15px; font-weight:650; }
+  .vmetrics { display:flex; gap:24px; margin-top:12px; }
+  .vm .n { font-size:26px; font-weight:680; line-height:1; letter-spacing:-.01em; }
+  .vm .n.good{color:var(--good);} .vm .n.bad{color:var(--bad);}
+  .vm .l { font-size:11px; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.07em; margin-top:5px; }
+
+  .histo-wrap { border:1px solid var(--line); background:var(--surface-2); border-radius:12px; padding:13px 15px; }
+  .histo-wrap h3 { margin:0 0 12px; font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); font-weight:600; }
+  .histo { display:grid; grid-template-columns:repeat(32,1fr); gap:2px; align-items:end; height:78px; }
+  .bar { border-radius:2px 2px 0 0; min-height:2px; position:relative; }
+  .bar.conf { outline:1.5px solid var(--bad); outline-offset:-1.5px; }
+  .bar .cnt { position:absolute; top:-15px; left:50%; transform:translateX(-50%); font-size:10px; font-family:ui-monospace,Menlo,monospace; color:var(--bad); font-weight:700; }
+  .histo-axis { display:flex; justify-content:space-between; font-family:ui-monospace,Menlo,monospace; font-size:10px; color:var(--ink-faint); margin-top:6px; }
+
+  /* bit inspector */
+  .insp { border:1px solid var(--accent); background:color-mix(in srgb,var(--accent) 7%,var(--surface)); border-radius:12px; padding:14px 16px; }
+  .insp h3 { margin:0 0 12px; font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); font-weight:600; display:flex; justify-content:space-between; align-items:baseline; }
+  .insp h3 .cell-id { color:var(--ink); font-family:ui-monospace,Menlo,monospace; letter-spacing:0; text-transform:none; font-size:13px; }
+  .chiprow { display:flex; align-items:center; gap:5px; margin:5px 0; }
+  .chiprow .cl { width:58px; flex:none; text-align:right; font-family:ui-monospace,Menlo,monospace; font-size:12px; color:var(--ink-soft); }
+  .chiprow .eq { margin-left:8px; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:var(--ink-soft); }
+  .chiprow .eq b { color:var(--ink); }
+  .chip { width:27px; height:31px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:6px; font-family:ui-monospace,Menlo,monospace; font-weight:600; font-size:15px; border:1px solid var(--line); background:var(--surface); color:var(--ink); }
+  .chip.teal { background:var(--accent); border-color:var(--accent); color:var(--chip-text); }
+  .chip.amber { background:var(--accent-2); border-color:var(--accent-2); color:var(--chip-text); }
+  .chip.green { background:var(--good); border-color:var(--good); color:var(--chip-text); }
+  .chip.dim { color:var(--ink-faint); }
+  .chip.bankbox { box-shadow:0 0 0 2px var(--good); }
+  .insp .rule { height:1px; background:var(--line-strong); margin:8px 0 8px 63px; }
+  .insp .gap { width:9px; flex:none; }
+  .insp .cap { font-size:12.5px; color:var(--ink-soft); margin-top:10px; }
+  .insp .cap b { color:var(--ink); }
+  .bankchip-big { display:inline-flex; align-items:center; gap:7px; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:var(--ink-soft); }
+  .bankchip-big .sw { width:15px; height:15px; border-radius:4px; }
+  .oplabel { font-family:ui-monospace,Menlo,monospace; font-size:16px; color:var(--accent-2); font-weight:700; width:58px; text-align:right; flex:none; }
+
+  .foot { margin-top:38px; font-size:13px; color:var(--ink-faint); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">CUDA · shared memory · Hopper WGMMA</p>
+    <h1>Bank conflicts and XOR swizzle to deal with them</h1>
+    <p class="lede">Shared memory is <b>32 banks</b> wide. A warp's 32 lanes are happy only when they hit 32 <em>different</em> banks. If you store tiles row-major, a column read will pile all 32 lanes onto <b>one</b> bank and it will cause a 32× stall. WGMMA and TMA rely on a single <span class="k2">XOR</span> to fix this. This visualization allows you to toggle the XOR and then <b>hover any cell</b> to see how the bank gets computed.</p>
+  </header>
+
+  <div class="panel">
+    <div class="controls">
+      <div class="seg warn" role="group" aria-label="Layout">
+        <button id="btnNo" aria-pressed="true">No swizzle</button>
+        <button id="btnXor" aria-pressed="false">XOR swizzle</button>
+      </div>
+      <div class="seg" role="group" aria-label="Access pattern">
+        <button id="btnCol" aria-pressed="true">Warp reads a column</button>
+        <button id="btnRow" aria-pressed="false">Warp reads a row</button>
+      </div>
+      <label class="slider">
+        <span class="ctl-label" id="idxLbl">column</span>
+        <input type="range" id="idx" min="0" max="31" value="13">
+        <span class="val" id="idxVal">13</span>
+      </label>
+    </div>
+
+    <div class="stage">
+      <div>
+        <p class="fig-label">Tile in shared memory — cell color = its 32-bit bank</p>
+        <div class="canvas-box">
+          <canvas id="cv" width="480" height="480" aria-label="32 by 32 shared-memory tile colored by bank. Hover to inspect a cell, click to move the warp access."></canvas>
+          <div class="axis"><span>col 0</span><span>logical (row, col) · 1 word = 4 B</span><span>col 31</span></div>
+          <div class="colnote" id="colnote"></div>
+        </div>
+      </div>
+
+      <div class="right">
+        <div class="insp" id="insp"><!-- filled by JS --></div>
+
+        <div class="verdict-card" id="vcard">
+          <div class="verdict-head"><span class="dot" id="vdot"></span><span class="t" id="vt"></span></div>
+          <div class="vmetrics">
+            <div class="vm"><div class="n" id="vDeg"></div><div class="l">lanes on busiest bank</div></div>
+            <div class="vm"><div class="n" id="vTx"></div><div class="l">serialized transactions</div></div>
+          </div>
+        </div>
+
+        <div class="histo-wrap">
+          <h3>Bank traffic (where the 32 lanes go)</h3>
+          <div class="histo" id="histo"></div>
+          <div class="histo-axis"><span>bank 0</span><span>bank 15</span><span>bank 31</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <h2>Reading the bit inspector</h2>
+    <p>Every cell lives at word index <span class="mono">row·32 + physCol</span>, and because the row stride is exactly 32, the low 5 bits of that index <em>are</em> the bank. Under <b>no swizzle</b> the physical column is just the logical <span class="k">col</span>, so bank = col — a column read overloads one bank. Under the <span class="k2">XOR swizzle</span> the physical column is <span class="k">col</span> <span class="k2">⊕ row</span>, so each lane's row "spins" its bank to a different value, and the 32 lanes become scattered across all 32 banks. The inspector shows exactly those 5 bits being XORed.</p>
+  </section>
+
+  <section>
+    <h2>Why WGMMA needs this</h2>
+    <p>Hopper's <span class="mono">wgmma.mma_async</span> feeds the tensor cores straight from shared memory, reading operand tiles in transposed / column-strided patterns. With naive row-major layout these accesses are serialized and take unnecessary time. So the operand's <b>64-bit matrix descriptor</b> carries a <b>swizzle-mode field</b> (none / 32B / 64B / 128B) telling the MMA unit the data is stored sheared and to address it that way. The matching <b>TMA</b> copy (<span class="mono">cp.async.bulk.tensor</span>) applies the same mode moving the tile global→shared, so it lands pre-sheared. This makes it conflict-free for <span class="mono">ldmatrix</span> and the tensor core alike with no extra passes and no extra storage required.</p>
+    <p class="mono" style="color:var(--ink-soft);font-size:13px">Real atoms (128B/64B/32B) XOR only a few bits at a vector granularity — a partial version of the full <span style="color:var(--accent-2);font-weight:700">⊕</span> shown here — but the mechanism is identical.</p>
+  </section>
+
+  <p class="foot">Toy model: 32×32 tile, 4 bytes/word, 128-byte row pitch, one warp = 32 lanes. Transactions = peak bank-conflict degree. Hover to inspect · click or drag the slider to move the warp access.</p>
+</div>
+
+<script>
+(function () {
+  var N = 32;
+  var swizzle = false, modeCol = true, idx = 13;
+  var hoverR = 5, hoverC = 13;   // last inspected cell
+
+  var cv = document.getElementById("cv");
+  var ctx = cv.getContext("2d");
+  var CELL = 480 / N;
+  var dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+
+  var off = document.createElement("canvas");
+  var octx = off.getContext("2d");
+  function setupHiDPI() {
+    cv.width = 480 * dpr; cv.height = 480 * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    off.width = 480 * dpr; off.height = 480 * dpr; octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  setupHiDPI();
+
+  function bankOf(r, c) { return swizzle ? ((c ^ r) & 31) : (c & 31); }
+  function fill(b) { return "hsl(" + ((b / 32) * 320) + ", 66%, 54%)"; }
+  function isDark() {
+    var t = document.documentElement.getAttribute("data-theme");
+    if (t === "dark") return true; if (t === "light") return false;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+  function accessedCells() {
+    var out = [];
+    if (modeCol) { for (var r = 0; r < N; r++) out.push([r, idx]); }
+    else { for (var c = 0; c < N; c++) out.push([idx, c]); }
+    return out;
+  }
+
+  function drawBase() {
+    octx.clearRect(0, 0, 480, 480);
+    for (var r = 0; r < N; r++)
+      for (var c = 0; c < N; c++) { octx.fillStyle = fill(bankOf(r, c)); octx.fillRect(c * CELL, r * CELL, CELL - 0.7, CELL - 0.7); }
+    octx.fillStyle = isDark() ? "rgba(11,16,21,0.5)" : "rgba(233,237,241,0.5)";
+    octx.fillRect(0, 0, 480, 480);
+    var cells = accessedCells();
+    cells.forEach(function (rc) { octx.fillStyle = fill(bankOf(rc[0], rc[1])); octx.fillRect(rc[1] * CELL, rc[0] * CELL, CELL - 0.7, CELL - 0.7); });
+    octx.strokeStyle = isDark() ? "#e7eef4" : "#10171f"; octx.lineWidth = 2;
+    if (modeCol) octx.strokeRect(idx * CELL + 1, 1, CELL - 2.5, 480 - 2.5);
+    else octx.strokeRect(1, idx * CELL + 1, 480 - 2.5, CELL - 2.5);
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, 480, 480);
+    ctx.drawImage(off, 0, 0, off.width, off.height, 0, 0, 480, 480);
+    // hovered cell marker
+    var ink = isDark() ? "#ffffff" : "#10171f";
+    ctx.strokeStyle = ink; ctx.lineWidth = 2.5;
+    ctx.strokeRect(hoverC * CELL + 1.25, hoverR * CELL + 1.25, CELL - 2.5, CELL - 2.5);
+    ctx.strokeStyle = isDark() ? "#10171f" : "#ffffff"; ctx.lineWidth = 1;
+    ctx.strokeRect(hoverC * CELL + 2.75, hoverR * CELL + 2.75, CELL - 5.5, CELL - 5.5);
+  }
+
+  function bits5(v) { var a = []; for (var i = 4; i >= 0; i--) a.push((v >> i) & 1); return a; }
+  function chips(arr, cls, extra) {
+    return arr.map(function (b, i) { return '<span class="chip ' + cls + (extra && extra(i) ? ' ' + extra(i) : '') + '">' + b + '</span>'; }).join("");
+  }
+
+  function inspect() {
+    var r = hoverR, c = hoverC;
+    var physCol = swizzle ? ((c ^ r) & 31) : (c & 31);
+    var bank = physCol, word = r * N + physCol, byte = word * 4;
+    var el = document.getElementById("insp");
+    var head = '<h3>Bit inspector <span class="cell-id">(row ' + r + ', col ' + c + ')</span></h3>';
+
+    var body = '';
+    body += '<div class="chiprow"><span class="cl">col</span>' + chips(bits5(c), "teal") + '<span class="eq">= <b>' + c + '</b></span></div>';
+    if (swizzle) {
+      body += '<div class="chiprow"><span class="oplabel">⊕ row</span>' + chips(bits5(r), "amber") + '<span class="eq">= <b>' + r + '</b></span></div>';
+      body += '<div class="rule"></div>';
+      body += '<div class="chiprow"><span class="cl">bank</span>' + chips(bits5(bank), "green") + '<span class="eq">= <b>' + bank + '</b></span></div>';
+      body += '<div class="cap">Physical column = col <b style="color:var(--accent-2)">⊕</b> row = ' + bank + '. Each lane’s <b>row</b> spins the bank to a new value → lanes scatter across banks.</div>';
+    } else {
+      body += '<div class="chiprow"><span class="cl">bank</span>' + chips(bits5(bank), "green") + '<span class="eq">= col = <b>' + bank + '</b></span></div>';
+      body += '<div class="cap">No swizzle: physical column = logical col, so <b>bank = col</b> for every row → a column read piles onto one bank.</div>';
+    }
+
+    // word address = [row(5)][bank(5)]
+    var addrHi = chips(bits5(r), "dim");
+    var addrLo = chips(bits5(bank), "green", function () { return "bankbox"; });
+    body += '<div class="rule" style="margin-top:12px"></div>';
+    body += '<div class="chiprow"><span class="cl">addr</span>' + addrHi + '<span class="gap"></span>' + addrLo +
+            '<span class="eq">word <b>' + word + '</b></span></div>';
+    body += '<div class="cap"><span class="mono">byte addr = word×4 = ' + byte + '</span> &nbsp;·&nbsp; bank = <span class="mono">(byte≫2) &amp; 31</span> = low 5 bits = <b style="color:var(--good)">' + bank + '</b></div>';
+
+    el.innerHTML = head + body;
+  }
+
+  function update() {
+    drawBase(); render(); inspect();
+    var cells = accessedCells();
+    var counts = new Array(32).fill(0);
+    cells.forEach(function (rc) { counts[bankOf(rc[0], rc[1])]++; });
+    var maxDeg = Math.max.apply(null, counts);
+    var distinct = counts.filter(function (x) { return x > 0; }).length;
+    var free = (maxDeg === 1);
+
+    var h = document.getElementById("histo"); h.innerHTML = "";
+    for (var b = 0; b < 32; b++) {
+      var bar = document.createElement("div");
+      bar.className = "bar" + (counts[b] > 1 ? " conf" : "");
+      bar.style.background = fill(b);
+      bar.style.height = counts[b] === 0 ? "2px" : (11 + (counts[b] / maxDeg) * 63) + "px";
+      if (counts[b] > 1) { var s = document.createElement("span"); s.className = "cnt"; s.textContent = counts[b]; bar.appendChild(s); }
+      h.appendChild(bar);
+    }
+
+    var card = document.getElementById("vcard");
+    card.className = "verdict-card " + (free ? "good" : "bad");
+    document.getElementById("vdot").className = "dot " + (free ? "good" : "bad");
+    document.getElementById("vt").textContent = free ? "Only one transaction, conflict-free" : maxDeg + "-way bank conflict";
+    var vDeg = document.getElementById("vDeg"); vDeg.textContent = maxDeg; vDeg.className = "n " + (free ? "good" : "bad");
+    var vTx = document.getElementById("vTx"); vTx.textContent = maxDeg; vTx.className = "n " + (free ? "good" : "bad");
+
+    document.getElementById("colnote").innerHTML = distinct === 1
+      ? "All 32 lanes collapse onto <b style='color:var(--bad)'>bank " + (idx & 31) + "</b>."
+      : "The 32 lanes spread across <b style='color:var(--good)'>all " + distinct + " banks</b>.";
+  }
+
+  function press(id, on) { document.getElementById(id).setAttribute("aria-pressed", on ? "true" : "false"); }
+  document.getElementById("btnNo").addEventListener("click", function () { swizzle = false; press("btnNo", 1); press("btnXor", 0); update(); });
+  document.getElementById("btnXor").addEventListener("click", function () { swizzle = true; press("btnXor", 1); press("btnNo", 0); update(); });
+  document.getElementById("btnCol").addEventListener("click", function () { modeCol = true; press("btnCol", 1); press("btnRow", 0); document.getElementById("idxLbl").textContent = "column"; update(); });
+  document.getElementById("btnRow").addEventListener("click", function () { modeCol = false; press("btnRow", 1); press("btnCol", 0); document.getElementById("idxLbl").textContent = "row"; update(); });
+
+  var slider = document.getElementById("idx");
+  slider.addEventListener("input", function () { idx = +slider.value; document.getElementById("idxVal").textContent = idx; update(); });
+
+  function cellAt(e) {
+    var rect = cv.getBoundingClientRect();
+    var px = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    var py = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+    return [Math.max(0, Math.min(31, Math.floor(py / (rect.height / N)))),
+            Math.max(0, Math.min(31, Math.floor(px / (rect.width / N))))];
+  }
+  cv.addEventListener("mousemove", function (e) {
+    var rc = cellAt(e);
+    if (rc[0] !== hoverR || rc[1] !== hoverC) { hoverR = rc[0]; hoverC = rc[1]; render(); inspect(); }
+  });
+  function tap(e) {
+    var rc = cellAt(e); hoverR = rc[0]; hoverC = rc[1];
+    idx = modeCol ? rc[1] : rc[0];
+    slider.value = idx; document.getElementById("idxVal").textContent = idx;
+    update();
+  }
+  cv.addEventListener("click", tap);
+  cv.addEventListener("touchstart", function (e) { e.preventDefault(); tap(e); }, { passive: false });
+
+  if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () { drawBase(); render(); });
+  new MutationObserver(function () { drawBase(); render(); }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  update();
+})();
+</script>
+</body>
+</html>
