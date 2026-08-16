@@ -134,6 +134,7 @@
     <p class="eyebrow">CUDA · shared memory · Hopper WGMMA</p>
     <h1>Bank conflicts and XOR swizzle to deal with them</h1>
     <p class="lede">Shared memory on the GPU is 32 banks wide. A warp (which is the basic unit of computation) has 32 lanes and a given bank can only be accessed by one lane at a time. If you store tiles of matrices row-major (meaning the memory addresses count up left-to-right and row by row, like reading a book) with a row that is 32 words wide, the entire column will live in one bank. Therefore when a warp is trying to get the values a column of this array (which is necessary for matrix multiplication), the warp will pile all 32 lanes onto <b>one</b> bank and it will cause a 32× stall because each lane has to wait for the previous lane to finish accessing the bank before it can go. WGMMA and TMA rely on a single <span class="k2">XOR</span> to fix this problem. This visualization allows you to toggle the XOR and then hover over any cell to see how the bank gets computed.</p>
+    <p> Note: you might think this doesn't matter if the matrix is isn't 32 words wide. Indeed it doesn't because the old-school solution is to just pad the matrix and avoid this problem. But padding is not possible in a tensor core and the layouts must be powers of two. Also the XOR permutation is a trick that works generally and doesn't waste memory.</p>
   </header>
 
   <div class="panel">
